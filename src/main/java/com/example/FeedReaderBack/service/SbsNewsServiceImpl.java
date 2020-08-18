@@ -1,15 +1,16 @@
 package com.example.FeedReaderBack.service;
 
-import com.example.FeedReaderBack.model.FeedItem;
+import com.example.FeedReaderBack.model.BroadcastStationItem;
 import com.example.FeedReaderBack.model.SbsNewsItem;
+import com.example.FeedReaderBack.repo.BroadcastStationRepo;
 import com.example.FeedReaderBack.repo.SbsNewsRepo;
+import com.slack.api.methods.SlackApiException;
 import org.jsoup.Jsoup;
 import org.jsoup.select.Elements;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.client.RestTemplate;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -31,30 +32,24 @@ import java.time.Instant;
 public class SbsNewsServiceImpl implements SbsNewsService {
 
     private final SbsNewsRepo sbsNewsRepo;
-    public SbsNewsServiceImpl(SbsNewsRepo sbsNewsRepo) {
+    private final SlackService slackService;
+    private final BroadcastStationRepo broadcastStationRepo;
+    private final SetNews setNews;
+    public SbsNewsServiceImpl(SbsNewsRepo sbsNewsRepo, SlackService slackService, BroadcastStationRepo broadcastStationRepo, SetNews setNews) {
         this.sbsNewsRepo = sbsNewsRepo;
-    }
-
-    private static String getTagValue(String tag, Element eElement){
-        NodeList nList = eElement.getElementsByTagName(tag).item(0).getChildNodes();
-        Node nValue = (Node) nList.item(0);
-        if(nValue == null)
-            return null;
-        return nValue.getNodeValue();
+        this.slackService = slackService;
+        this.broadcastStationRepo = broadcastStationRepo;
+        this.setNews = setNews;
     }
 
     @Override
     @Scheduled(cron = "0 0/5 * * * *")
-    public ResponseEntity<String> getRss() throws ParserConfigurationException, IOException, SAXException, XPathExpressionException {
+    public ResponseEntity<String> getRss() throws ParserConfigurationException, IOException, SAXException, XPathExpressionException, SlackApiException {
         String url = "https://news.sbs.co.kr/news/SectionRssFeed.do?sectionId=01&plink=RSSREADER";
 
-        RestTemplate restTemplate = new RestTemplate();
-        ResponseEntity<String> result = restTemplate.getForEntity(url, String.class);
+        ResponseEntity<String> result = getStringResponseEntity(url);
 
-        InputSource is = new InputSource(new StringReader(result.getBody()));
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        DocumentBuilder documentBuilder = factory.newDocumentBuilder();
-        Document document = documentBuilder.parse(is);
+        Document document = getDocument(result);
 
 //        XPathFactory xPathFactory = XPathFactory.newInstance();
 //        XPath xpath = xPathFactory.newXPath();
@@ -75,24 +70,13 @@ public class SbsNewsServiceImpl implements SbsNewsService {
             Node nNode = nList.item(temp);
             if(nNode.getNodeType() == Node.ELEMENT_NODE){
                 Element eElement = (Element) nNode;
-                SbsNewsItem sbsNewsItem = new SbsNewsItem();
 
-                sbsNewsItem.setTitle(getTagValue("title", eElement));
-                sbsNewsItem.setLink(getTagValue("link", eElement));
-                sbsNewsItem.setAuthor(getTagValue("author", eElement));
+//                if (!sbsNewsRepo.findByLink(getTagValue("link", eElement)).isPresent()) {
+//                    slackService.postSlack(getTagValue("link", eElement));
+//                }
+                BroadcastStationItem sbs = broadcastStationRepo.findAll().iterator().next();
 
-
-                org.jsoup.nodes.Document doc = Jsoup.parse(getTagValue("content:encoded", eElement));
-                Elements ps = doc.select("p.change");
-
-                sbsNewsItem.setContent(ps.text());
-
-                if(eElement.getElementsByTagName("enclosure").getLength() == 1){
-                    Element enc = (Element) eElement.getElementsByTagName("enclosure").item(0);
-                    sbsNewsItem.setImage(enc.getAttribute("url"));
-                }
-
-                sbsNewsItem.setUpdated(Instant.now()); //clock -> 가짜 테스트 좋다
+                SbsNewsItem sbsNewsItem = setNews.getSbsNewsItem(eElement, sbs);
                 // 시간 문제가 생기는 것을 해결하려면
                 // 1. sleep
                 // 2. 항상 증가하는 시계 instant의 무언가 -> 내부적 슬립 가능성 존재 or 서서히 시계를 맞추는 리눅스 같ㅇㄴ 그런애
@@ -104,6 +88,18 @@ public class SbsNewsServiceImpl implements SbsNewsService {
         }
 
         return result;
+    }
+
+    private Document getDocument(ResponseEntity<String> result) throws ParserConfigurationException, SAXException, IOException {
+        InputSource is = new InputSource(new StringReader(result.getBody()));
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        DocumentBuilder documentBuilder = factory.newDocumentBuilder();
+        return documentBuilder.parse(is);
+    }
+
+    private ResponseEntity<String> getStringResponseEntity(String url) {
+        RestTemplate restTemplate = new RestTemplate();
+        return restTemplate.getForEntity(url, String.class);
     }
 
     @Override
